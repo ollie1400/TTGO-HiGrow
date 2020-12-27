@@ -308,6 +308,8 @@ DS18B20 temp18B20(DS18B20_PIN);
 #endif
 
 bool bme_found = false;
+bool sleepBetweenReads = false;
+constexpr uint32_t kLoopTime_ms = 2000;
 
 void smartConfigStart(Button2 &b)
 {
@@ -360,6 +362,12 @@ void sleepHandler(Button2 &b)
     esp_sleep_enable_ext1_wakeup(GPIO_SEL_35, ESP_EXT1_WAKEUP_ALL_LOW);
     delay(1000);
     esp_deep_sleep_start();
+}
+
+void sleepModeHandler(Button2 &b)
+{
+    sleepBetweenReads = !sleepBetweenReads;
+    Serial.println(sleepBetweenReads ? "Deep sleep between reads" : "Active between reads");
 }
 
 bool serverBegin()
@@ -475,6 +483,7 @@ void setup()
 
     button.setLongClickHandler(smartConfigStart);
     useButton.setLongClickHandler(sleepHandler);
+    useButton.setClickHandler(sleepModeHandler);
 
     Wire.begin(I2C_SDA, I2C_SCL);
 
@@ -546,60 +555,75 @@ void loop()
     static uint64_t timestamp;
     button.loop();
     useButton.loop();
-    if (millis() - timestamp > 5000)
+
+    // if we are not deep sleeping, we need to check the timer and early-out if
+    // not enough time has passed
+    if (!sleepBetweenReads)
     {
-        timestamp = millis();
-        // if (WiFi.status() == WL_CONNECTED) {
-        if (serverBegin())
+        if (millis() - timestamp < kLoopTime_ms)
         {
-            float lux = lightMeter.readLightLevel();
+            return;
+        }
+    }
+    else
+    {
+        // light sleep
+        Serial.println("Sleeping between reads...");
+        esp_sleep_enable_timer_wakeup(kLoopTime_ms * 1000);
+        esp_light_sleep_start();
+    }
 
-            if (bme_found)
-            {
-                float bme_temp = bmp.readTemperature();
-                float bme_pressure = (bmp.readPressure() / 100.0F);
-                float bme_altitude = bmp.readAltitude(1013.25);
+    // wake up and take readings
+    timestamp = millis();
+    if (serverBegin())
+    {
+        float lux = lightMeter.readLightLevel();
+
+        if (bme_found)
+        {
+            float bme_temp = bmp.readTemperature();
+            float bme_pressure = (bmp.readPressure() / 100.0F);
+            float bme_altitude = bmp.readAltitude(1013.25);
 #ifdef USE_DASH
-                ESPDash.updateTemperatureCard("temp", (int)bme_temp);
-                ESPDash.updateNumberCard("press", (int)bme_pressure);
-                ESPDash.updateNumberCard("alt", (int)bme_altitude);
+            ESPDash.updateTemperatureCard("temp", (int)bme_temp);
+            ESPDash.updateNumberCard("press", (int)bme_pressure);
+            ESPDash.updateNumberCard("alt", (int)bme_altitude);
 #endif
-            }
+        }
 
-            float t12 = dht12.readTemperature();
-            // Read temperature as Fahrenheit (isFahrenheit = true)
-            float h12 = dht12.readHumidity();
+        float t12 = dht12.readTemperature();
+        // Read temperature as Fahrenheit (isFahrenheit = true)
+        float h12 = dht12.readHumidity();
 
 #ifdef USE_DASH
-            if (!isnan(t12) && !isnan(h12))
-            {
-                ESPDash.updateTemperatureCard("temp2", (int)t12);
-                ESPDash.updateHumidityCard("hum2", (int)h12);
-            }
-            ESPDash.updateNumberCard("lux", (int)lux);
+        if (!isnan(t12) && !isnan(h12))
+        {
+            ESPDash.updateTemperatureCard("temp2", (int)t12);
+            ESPDash.updateHumidityCard("hum2", (int)h12);
+        }
+        ESPDash.updateNumberCard("lux", (int)lux);
 #endif
 
-            uint16_t soil = readSoil();
-            uint32_t salt = readSalt();
-            float bat = readBattery();
+        uint16_t soil = readSoil();
+        uint32_t salt = readSalt();
+        float bat = readBattery();
 #ifdef USE_DASH
-            ESPDash.updateHumidityCard("soil", (int)soil);
-            ESPDash.updateNumberCard("salt", (int)salt);
-            ESPDash.updateNumberCard("batt", (int)bat);
+        ESPDash.updateHumidityCard("soil", (int)soil);
+        ESPDash.updateNumberCard("salt", (int)salt);
+        ESPDash.updateNumberCard("batt", (int)bat);
 #else
-            Serial.print("soil ");
-            Serial.println(soil);
-            Serial.print("salt ");
-            Serial.println(salt);
-            Serial.print("batt ");
-            Serial.println(bat);
+        Serial.print("soil ");
+        Serial.println(soil);
+        Serial.print("salt ");
+        Serial.println(salt);
+        Serial.print("batt ");
+        Serial.println(bat);
 #endif
 
 #ifdef USE_18B20_TEMP_SENSOR
-            //Single data stream upload
-            float temp = temp18B20.temp();
-            ESPDash.updateTemperatureCard("temp3", (int)temp);
+        //Single data stream upload
+        float temp = temp18B20.temp();
+        ESPDash.updateTemperatureCard("temp3", (int)temp);
 #endif
-        }
     }
 }
