@@ -45,6 +45,9 @@ AsyncWebServer server(80);
 Button2 button(BOOT_PIN);
 Button2 useButton(USER_BUTTON);
 WiFiMulti multi;
+#ifdef USE_DASH
+ESPDash dash(&server);
+#endif
 #ifdef USE_18B20_TEMP_SENSOR
 DS18B20 temp18B20(DS18B20_PIN);
 #endif
@@ -459,6 +462,17 @@ void sleepHandler(Button2 &b)
     esp_deep_sleep_start();
 }
 
+#ifdef USE_DASH
+Card tempCard(&dash, TEMPERATURE_CARD, "Temperature", "°C");
+Card humiCard(&dash, HUMIDITY_CARD, "Humidity", "%", 0, 100);
+Card luxCard(&dash, GENERIC_CARD, "Light level", "lux");
+Card moistureCard(&dash, HUMIDITY_CARD, "Soil moisture", "%", 0, 100);
+Card saltCard(&dash, GENERIC_CARD, "Soil salinity");
+Card battCard(&dash, GENERIC_CARD, "Battery level", "mV");
+Card rssiCard(&dash, GENERIC_CARD, "WiFi Strength", "dBm");
+Card timeCard(&dash, GENERIC_CARD, "Last update time");
+#endif
+
 bool serverBegin()
 {
     static bool isBegin = false;
@@ -467,51 +481,11 @@ bool serverBegin()
         return true;
     }
 
-#ifdef USE_DASH
-    ESPDash.init(server);
-#endif
-
     isBegin = true;
     if (MDNS.begin("soil"))
     {
         Serial.println("MDNS responder started");
     }
-    // Add Respective Cards
-#ifdef USE_DASH
-    if (bme_found)
-    {
-#ifdef USE_CHINESE_WEB
-        ESPDash.addTemperatureCard("temp", "BME传感器温度/C", 0, 0);
-        ESPDash.addNumberCard("press", "BME传感器压力/hPa", 0);
-        ESPDash.addNumberCard("alt", "BME传感器高度/m", 0);
-#else
-        ESPDash.addTemperatureCard("temp", "BME Temperature/C", 0, 0);
-        ESPDash.addNumberCard("press", "BME Pressure/hPa", 0);
-        ESPDash.addNumberCard("alt", "BME Altitude/m", 0);
-#endif
-    }
-#ifdef USE_CHINESE_WEB
-    ESPDash.addTemperatureCard("temp2", "DHT12传感器温度/C", 0, 0);
-    ESPDash.addHumidityCard("hum2", "DHT12传感器湿度/%", 0);
-    ESPDash.addNumberCard("lux", "BH1750传感器亮度/lx", 0);
-    ESPDash.addHumidityCard("soil", "土壤湿度", 0);
-    ESPDash.addNumberCard("salt", "水分百分比", 0);
-    ESPDash.addNumberCard("batt", "电池电压/mV", 0);
-#else
-    ESPDash.addTemperatureCard("temp2", "DHT Temperature/C", 0, 0);
-    ESPDash.addHumidityCard("hum2", "DHT Humidity/%", 0);
-    ESPDash.addNumberCard("lux", "BH1750/lx", 0);
-    ESPDash.addHumidityCard("soil", "Soil", 0);
-    ESPDash.addNumberCard("salt", "Salt", 0);
-    ESPDash.addNumberCard("batt", "Battery/mV", 0);
-    ESPDash.addHumidityCard("rssi", "WiFi Strength/dBm", 0); // can't be "NumberCard" because a number card has a value stored as uint16_t (unsigned)
-    ESPDash.addHumidityCard("time", "Last update time (HHMMSS)", 0);
-#endif
-
-#ifdef USE_18B20_TEMP_SENSOR
-    ESPDash.addTemperatureCard("temp3", "18B20温度/C", 0, 0);
-#endif
-#endif
     server.begin();
     MDNS.addService("http", "tcp", 80);
     return true;
@@ -635,8 +609,14 @@ float readBattery()
 void loop()
 {
     static uint64_t timestamp;
+    static uint64_t wifiTimestamp;
     button.loop();
     useButton.loop();
+
+    // light sleep for half of the time
+    // Serial.println("Sleeping between reads...");
+    // esp_sleep_enable_timer_wakeup(kUpdateTime_ms * 500);
+    // esp_light_sleep_start();
 
     if (millis() - timestamp > kUpdateTime_ms)
     {
@@ -644,16 +624,19 @@ void loop()
         // if (WiFi.status() == WL_CONNECTED) {
         if (serverBegin())
         {
+            // if we aren't connected to the wifi, return
+            // if we haven't had wifi for a certain amount of time
+
             // try to get global time if we haven't already
             if (!g_gotStartupTime)
             {
                 g_gotStartupTime = tryToGetGlobalTime();
-                ESPDash.updateHumidityCard("time", 0);
+                timeCard.update("---");
             }
             else
             {
                 uint32_t time = formatTimeAsNumber();
-                ESPDash.updateHumidityCard("time", time);
+                timeCard.update((int)time);
             }
 
             // try to initi I2C if we didn't already
@@ -667,29 +650,16 @@ void loop()
             {
                 Serial.println("Reading I2C sensors");
                 float lux = lightMeter.readLightLevel();
-                if (bme_found)
-                {
-                    float bme_temp = bmp.readTemperature();
-                    float bme_pressure = (bmp.readPressure() / 100.0F);
-                    float bme_altitude = bmp.readAltitude(1013.25);
-#ifdef USE_DASH
-                    ESPDash.updateTemperatureCard("temp", (int)bme_temp);
-                    ESPDash.updateNumberCard("press", (int)bme_pressure);
-                    ESPDash.updateNumberCard("alt", (int)bme_altitude);
-#endif
-                }
-
                 float t12 = dht12.readTemperature();
                 // Read temperature as Fahrenheit (isFahrenheit = true)
                 float h12 = dht12.readHumidity();
-
 #ifdef USE_DASH
                 if (!isnan(t12) && !isnan(h12))
                 {
-                    ESPDash.updateTemperatureCard("temp2", (int)t12);
-                    ESPDash.updateHumidityCard("hum2", (int)h12);
+                    tempCard.update((int)t12);
+                    humiCard.update((int)h12);
                 }
-                ESPDash.updateNumberCard("lux", (int)lux);
+                luxCard.update((int)lux);
 #endif
             }
             // turn the ADC on
@@ -703,10 +673,10 @@ void loop()
             Serial.print("RSSI: ");
             Serial.println(rssi);
 #ifdef USE_DASH
-            ESPDash.updateHumidityCard("soil", (int)soil);
-            ESPDash.updateNumberCard("salt", (int)salt);
-            ESPDash.updateNumberCard("batt", (int)bat);
-            ESPDash.updateHumidityCard("rssi", rssi);
+            humiCard.update((int)soil);
+            saltCard.update((int)salt);
+            battCard.update((int)bat);
+            rssiCard.update(rssi);
 #else
             Serial.print("soil ");
             Serial.println(soil);
