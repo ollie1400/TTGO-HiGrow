@@ -27,6 +27,10 @@ To make the device start broadcasting its own WiFI network again, enter smart-co
 
 ### The numbers
 
+## Light level
+
+The ambient light level is reported in `lx` and is measured by a `BH1750FVI` sensor at I2C address `35` (decimal).
+
 ## Soil
 
 This is a measure of the moisture content of the soil.

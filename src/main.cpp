@@ -15,7 +15,6 @@
 #include <Wire.h>
 #include <BH1750.h>
 #include "DHT12_sensor_library/DHT12.h"
-#include <Adafruit_BME280.h>
 #include <WiFiMulti.h>
 #include "esp_wifi.h"
 #include "driver/adc.h"
@@ -24,7 +23,6 @@
 #include "nvs.h"
 
 #define SOFTAP_MODE
-// #define USE_18B20_TEMP_SENSOR
 // #define USE_CHINESE_WEB
 
 #define I2C_SDA 25
@@ -36,10 +34,8 @@
 #define BOOT_PIN 0
 #define POWER_CTRL 4
 #define USER_BUTTON 35
-#define DS18B20_PIN 21 //18b20 data pin
 
 BH1750 lightMeter(0x23); //0x23
-Adafruit_BME280 bmp;     //0x77
 DHT12 dht12(DHT12_PIN, true);
 AsyncWebServer server(80);
 Button2 button(BOOT_PIN);
@@ -48,17 +44,13 @@ WiFiMulti multi;
 #ifdef USE_DASH
 ESPDash dash(&server);
 #endif
-#ifdef USE_18B20_TEMP_SENSOR
-DS18B20 temp18B20(DS18B20_PIN);
-#endif
 
-bool i2cInited = false;
-bool bme_found = false;
 constexpr uint32_t kUpdateTime_ms = 5000;
 constexpr long kGmtOffset_s = 0;        // offset between GMT and your local time
 constexpr int kDaylightOffset_s = 3600; // offset for daylight saving
 constexpr char kNtpServer[] = "pool.ntp.org";
 
+bool g_i2cInited = false;
 bool g_gotStartupTime = false;
 tm g_startupTime;
 uint32_t g_startupTime_millis = 0;
@@ -78,7 +70,7 @@ bool tryToGetGlobalTime()
     return true;
 }
 
-uint32_t formatTimeAsNumber()
+const char *getTimeString()
 {
     uint32_t now = millis();
     uint32_t diff_ms = now - g_startupTime_millis;
@@ -99,21 +91,13 @@ uint32_t formatTimeAsNumber()
 
     uint32_t extraHours = mins / 60;
     hours += extraHours;
+    hours %= 24;
     mins -= extraHours * 60;
 
-    Serial.print(hours);
-    Serial.print(":");
-    Serial.print(mins);
-    Serial.print(":");
-    Serial.println(secs);
-
-    uint32_t timeNumber = //
-        hours * 10000     //
-        + mins * 100      //
-        + secs;
-    Serial.println(timeNumber);
-
-    return timeNumber;
+    static char s_buffer[10];
+    sprintf(s_buffer, "%02i:%02i:%02i", hours, mins, secs);
+    Serial.println(s_buffer);
+    return &s_buffer[0];
 }
 
 void initNVS()
@@ -288,94 +272,6 @@ bool writeSSIDPW(const char *ssid, const char *pwd)
     }
 }
 
-#ifdef USE_18B20_TEMP_SENSOR
-// Simple ds18b20 class
-class DS18B20
-{
-public:
-    DS18B20(int gpio)
-    {
-        pin = gpio;
-    }
-
-    float temp()
-    {
-        uint8_t arr[2] = {0};
-        if (reset())
-        {
-            wByte(0xCC);
-            wByte(0x44);
-            delay(750);
-            reset();
-            wByte(0xCC);
-            wByte(0xBE);
-            arr[0] = rByte();
-            arr[1] = rByte();
-            reset();
-            return (float)(arr[0] + (arr[1] * 256)) / 16;
-        }
-        return 0;
-    }
-
-private:
-    int pin;
-
-    void write(uint8_t bit)
-    {
-        pinMode(pin, OUTPUT);
-        digitalWrite(pin, LOW);
-        delayMicroseconds(5);
-        if (bit)
-            digitalWrite(pin, HIGH);
-        delayMicroseconds(80);
-        digitalWrite(pin, HIGH);
-    }
-
-    uint8_t read()
-    {
-        pinMode(pin, OUTPUT);
-        digitalWrite(pin, LOW);
-        delayMicroseconds(2);
-        digitalWrite(pin, HIGH);
-        delayMicroseconds(15);
-        pinMode(pin, INPUT);
-        return digitalRead(pin);
-    }
-
-    void wByte(uint8_t bytes)
-    {
-        for (int i = 0; i < 8; ++i)
-        {
-            write((bytes >> i) & 1);
-        }
-        delayMicroseconds(100);
-    }
-
-    uint8_t rByte()
-    {
-        uint8_t r = 0;
-        for (int i = 0; i < 8; ++i)
-        {
-            if (read())
-                r |= 1 << i;
-            delayMicroseconds(15);
-        }
-        return r;
-    }
-
-    bool reset()
-    {
-        pinMode(pin, OUTPUT);
-        digitalWrite(pin, LOW);
-        delayMicroseconds(500);
-        digitalWrite(pin, HIGH);
-        pinMode(pin, INPUT);
-        delayMicroseconds(500);
-        return digitalRead(pin);
-    }
-};
-#endif
-
 bool tryInitI2CAndDevices()
 {
     Serial.println("tryInitI2CAndDevices");
@@ -385,16 +281,6 @@ bool tryInitI2CAndDevices()
     }
 
     dht12.begin();
-
-    if (!bmp.begin())
-    {
-        Serial.println(F("Could not find a valid BMP280 sensor, check wiring!"));
-        bme_found = false;
-    }
-    else
-    {
-        bme_found = true;
-    }
 
     if (lightMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE))
     {
@@ -563,8 +449,8 @@ void setup()
     digitalWrite(POWER_CTRL, 1);
     delay(1000);
 
-    i2cInited = tryInitI2CAndDevices();
-    if (!i2cInited)
+    g_i2cInited = tryInitI2CAndDevices();
+    if (!g_i2cInited)
     {
         Serial.println("Couldn't init I2C");
     }
@@ -608,8 +494,7 @@ float readBattery()
 
 void loop()
 {
-    static uint64_t timestamp;
-    static uint64_t wifiTimestamp;
+    static uint64_t s_timestamp;
     button.loop();
     useButton.loop();
 
@@ -618,9 +503,9 @@ void loop()
     // esp_sleep_enable_timer_wakeup(kUpdateTime_ms * 500);
     // esp_light_sleep_start();
 
-    if (millis() - timestamp > kUpdateTime_ms)
+    if (millis() - s_timestamp > kUpdateTime_ms)
     {
-        timestamp = millis();
+        s_timestamp = millis();
         // if (WiFi.status() == WL_CONNECTED) {
         if (serverBegin())
         {
@@ -635,29 +520,30 @@ void loop()
             }
             else
             {
-                uint32_t time = formatTimeAsNumber();
-                timeCard.update((int)time);
+                const char* time = getTimeString();
+                timeCard.update(String(time));
             }
 
             // try to initi I2C if we didn't already
-            if (!i2cInited)
+            if (!g_i2cInited)
             {
-                i2cInited = tryInitI2CAndDevices();
+                g_i2cInited = tryInitI2CAndDevices();
             }
 
             // if I2C was initialised, read sensors
-            if (i2cInited)
+            if (g_i2cInited)
             {
                 Serial.println("Reading I2C sensors");
                 float lux = lightMeter.readLightLevel();
-                float t12 = dht12.readTemperature();
-                // Read temperature as Fahrenheit (isFahrenheit = true)
-                float h12 = dht12.readHumidity();
+                luxCard.update((int)lux);
+
+                float temperature = dht12.readTemperature();
+                float humidity = dht12.readHumidity();
 #ifdef USE_DASH
-                if (!isnan(t12) && !isnan(h12))
+                if (!isnan(temperature) && !isnan(humidity))
                 {
-                    tempCard.update((int)t12);
-                    humiCard.update((int)h12);
+                    tempCard.update((int)temperature);
+                    humiCard.update((int)humidity);
                 }
                 luxCard.update((int)lux);
 #endif
@@ -685,12 +571,7 @@ void loop()
             Serial.print("batt ");
             Serial.println(bat);
 #endif
-
-#ifdef USE_18B20_TEMP_SENSOR
-            //Single data stream upload
-            float temp = temp18B20.temp();
-            ESPDash.updateTemperatureCard("temp3", (int)temp);
-#endif
+            dash.sendUpdates();
         }
     }
 }
