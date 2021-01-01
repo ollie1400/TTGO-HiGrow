@@ -559,7 +559,7 @@ void loop()
             Serial.print("RSSI: ");
             Serial.println(rssi);
 #ifdef USE_DASH
-            humiCard.update((int)soil);
+            moistureCard.update((int)soil);
             saltCard.update((int)salt);
             battCard.update((int)bat);
             rssiCard.update(rssi);
