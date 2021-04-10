@@ -82,11 +82,11 @@ bool takeMeasurements(BH1750 *lightMeter, DHT12 *dht12, ttgo_proto_Measurements 
     outMeasurements->lux = lightMeter->readLightLevel();
 
     // turn the ADC on to take other measurements
-    adc_power_on();
+    adc_power_acquire();
     outMeasurements->soil = readSoil();
     outMeasurements->salt = readSalt();
     outMeasurements->battery_mV = readBattery();
-    adc_power_off();
+    adc_power_release();
 
     outMeasurements->timestamp = getEpochTime();
 
