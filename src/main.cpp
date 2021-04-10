@@ -32,6 +32,7 @@ constexpr char kNextSensorNameAPI[] = "/sensors/next/";
 
 // working data stored in RTC memory
 constexpr uint32_t kTimeBetweenMeasurements_ms = 2 * 60 * 1000;
+constexpr uint8_t kMaxNumMQTTAttempts = 5;
 constexpr uint8_t kNumMeasurementsToTakeBeforeSending = 5;
 RTC_DATA_ATTR ttgo_proto_Measurements g_measurements[kNumMeasurementsToTakeBeforeSending];
 RTC_DATA_ATTR uint8_t g_numMeasurementsRecorded = 0;
@@ -230,7 +231,7 @@ void setup()
     PRINT(getCpuFrequencyMhz());
     PRINTLN(" MHz");
 
-    // update rtc if necessesary
+    // update RTC if necessesary
     bool wifiConnected = false;
     if (g_timeSinceRTCUpdate_ms >= kTimeBetweenRTCUpdates_ms)
     {
@@ -350,8 +351,10 @@ void setup()
         // now send them all
         mqttClient.setServer(kMQTTBroker, kMQTTBrokerPort);
         PRINTLN("Connecting MQTT client...");
+        uint8_t mqttConnectionAttempts = 0;
         while (!mqttClient.connected())
         {
+            ++mqttConnectionAttempts;
             if (mqttClient.connect(sensorName))
             {
                 PRINT("MQTT client connected as '");
@@ -362,7 +365,14 @@ void setup()
 
             PRINT("Failed to connect MQTT client.  State = ");
             PRINT(mqttClient.state());
-            PRINTLN(". Retrying in 5s...");
+            PRINT(".");
+
+            // if we've tried too many times, bottle out
+            if (mqttConnectionAttempts >= kMaxNumMQTTAttempts)
+            {
+                enterDeepSleep();
+            }
+            PRINTLN(" Retrying in 5s...");
             delay(5000);
         }
 
